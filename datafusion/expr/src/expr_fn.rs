@@ -815,6 +815,7 @@ pub struct ExprFuncBuilder {
     filter: Option<Expr>,
     distinct: bool,
     null_treatment: Option<NullTreatment>,
+    null_treatment_changed: bool,
     partition_by: Option<Vec<Expr>>,
     window_frame: Option<WindowFrame>,
 }
@@ -828,6 +829,7 @@ impl ExprFuncBuilder {
             filter: None,
             distinct: false,
             null_treatment: None,
+            null_treatment_changed: false,
             partition_by: None,
             window_frame: None,
         }
@@ -846,6 +848,7 @@ impl ExprFuncBuilder {
             filter,
             distinct,
             null_treatment,
+            null_treatment_changed,
             partition_by,
             window_frame,
         } = self;
@@ -858,21 +861,41 @@ impl ExprFuncBuilder {
 
         let fun_expr = match fun {
             ExprFuncKind::Aggregate(mut udaf) => {
-                udaf.params.order_by = order_by.unwrap_or_default();
-                udaf.params.filter = filter.map(Box::new);
-                udaf.params.distinct = distinct;
-                udaf.params.null_treatment = null_treatment;
+                if let Some(order_by) = order_by {
+                    udaf.params.order_by = order_by;
+                }
+                if let Some(filter) = filter {
+                    udaf.params.filter = Some(Box::new(filter));
+                }
+                udaf.params.distinct |= distinct;
+                if null_treatment_changed {
+                    udaf.params.null_treatment = null_treatment;
+                }
                 Expr::AggregateFunction(udaf)
             }
             ExprFuncKind::Window(mut udwf) => {
-                let has_order_by = order_by.as_ref().map(|o| !o.is_empty());
-                udwf.params.partition_by = partition_by.unwrap_or_default();
-                udwf.params.order_by = order_by.unwrap_or_default();
-                udwf.params.window_frame =
-                    window_frame.unwrap_or_else(|| WindowFrame::new(has_order_by));
-                udwf.params.filter = filter.map(Box::new);
-                udwf.params.null_treatment = null_treatment;
-                udwf.params.distinct = distinct;
+                let order_by_changed = order_by.is_some();
+                let has_order_by = order_by.as_ref().is_some_and(|o| !o.is_empty());
+                if let Some(partition_by) = partition_by {
+                    udwf.params.partition_by = partition_by;
+                }
+                if let Some(order_by) = order_by {
+                    udwf.params.order_by = order_by;
+                }
+                if let Some(window_frame) = window_frame {
+                    udwf.params.window_frame = window_frame;
+                    udwf.params.window_frame_explicit = true;
+                } else if order_by_changed && !udwf.params.window_frame_explicit {
+                    udwf.params.window_frame =
+                        WindowFrame::new(has_order_by.then_some(false));
+                }
+                if let Some(filter) = filter {
+                    udwf.params.filter = Some(Box::new(filter));
+                }
+                if null_treatment_changed {
+                    udwf.params.null_treatment = null_treatment;
+                }
+                udwf.params.distinct |= distinct;
                 Expr::WindowFunction(udwf)
             }
         };
@@ -906,6 +929,7 @@ impl ExprFunctionExt for ExprFuncBuilder {
         null_treatment: impl Into<Option<NullTreatment>>,
     ) -> ExprFuncBuilder {
         self.null_treatment = null_treatment.into();
+        self.null_treatment_changed = true;
         self
     }
 
@@ -973,6 +997,7 @@ impl ExprFunctionExt for Expr {
         };
         if builder.fun.is_some() {
             builder.null_treatment = null_treatment.into();
+            builder.null_treatment_changed = true;
         }
         builder
     }
@@ -1003,6 +1028,9 @@ impl ExprFunctionExt for Expr {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::expr::{AggregateFunction, WindowFunctionDefinition};
+    use crate::lit;
+    use crate::test::function_stub::sum_udaf;
 
     #[test]
     fn filter_is_null_and_is_not_null() {
@@ -1013,5 +1041,78 @@ mod test {
             format!("{}", col_not_null.is_not_null()),
             "col2 IS NOT NULL"
         );
+    }
+
+    #[test]
+    fn chaining_preserves_existing_aggregate_options() {
+        let original = Expr::AggregateFunction(AggregateFunction::new_udf(
+            sum_udaf(),
+            vec![col("v")],
+            true,
+            Some(Box::new(col("v").gt(lit(0)))),
+            vec![col("t").sort(true, false)],
+            Some(NullTreatment::IgnoreNulls),
+        ));
+
+        let Expr::AggregateFunction(result) = original.distinct().build().unwrap() else {
+            panic!("expected aggregate function")
+        };
+        assert!(result.params.distinct);
+        assert_eq!(result.params.filter, Some(Box::new(col("v").gt(lit(0)))));
+        assert_eq!(result.params.order_by, vec![col("t").sort(true, false)]);
+        assert_eq!(
+            result.params.null_treatment,
+            Some(NullTreatment::IgnoreNulls)
+        );
+    }
+
+    #[test]
+    fn chaining_window_options_rederives_only_implicit_frames() {
+        let window = || {
+            Expr::from(WindowFunction::new(
+                WindowFunctionDefinition::AggregateUDF(sum_udaf()),
+                vec![col("v")],
+            ))
+        };
+        let order_by = vec![col("t").sort(true, false)];
+
+        let Expr::WindowFunction(implicit) =
+            window().order_by(order_by.clone()).build().unwrap()
+        else {
+            panic!("expected window function")
+        };
+        assert!(!implicit.params.window_frame_explicit);
+        assert_eq!(implicit.params.order_by, order_by);
+        assert_eq!(implicit.params.window_frame, WindowFrame::new(Some(false)));
+
+        let explicit_default = window()
+            .order_by(order_by.clone())
+            .window_frame(WindowFrame::new(Some(false)))
+            .build()
+            .unwrap();
+        assert_eq!(Expr::WindowFunction(implicit.clone()), explicit_default);
+
+        let Expr::WindowFunction(chained) = Expr::WindowFunction(implicit)
+            .partition_by(vec![col("g")])
+            .build()
+            .unwrap()
+        else {
+            panic!("expected window function")
+        };
+        assert_eq!(chained.params.order_by, order_by);
+        assert_eq!(chained.params.partition_by, vec![col("g")]);
+
+        let frame = WindowFrame::new(None);
+        let Expr::WindowFunction(explicit) = window()
+            .window_frame(frame.clone())
+            .order_by(order_by.clone())
+            .build()
+            .unwrap()
+        else {
+            panic!("expected window function")
+        };
+        assert!(explicit.params.window_frame_explicit);
+        assert_eq!(explicit.params.order_by, order_by);
+        assert_eq!(explicit.params.window_frame, frame);
     }
 }

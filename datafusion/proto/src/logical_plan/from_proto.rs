@@ -205,6 +205,7 @@ pub fn parse_expr(
             Ok(Expr::Literal(scalar_value, None))
         }
         ExprType::WindowExpr(expr) => {
+            let window_frame_explicit = expr.window_frame_explicit;
             let window_function = expr
                 .window_function
                 .as_ref()
@@ -275,7 +276,11 @@ pub fn parse_expr(
                 builder = builder.filter(filter);
             }
 
-            builder.build().map_err(Error::DataFusionError)
+            let mut expr = builder.build().map_err(Error::DataFusionError)?;
+            if let Expr::WindowFunction(window) = &mut expr {
+                window.params.window_frame_explicit = window_frame_explicit;
+            }
+            Ok(expr)
         }
         ExprType::Alias(alias) => Ok(Expr::Alias(Alias::new(
             parse_required_expr(alias.expr.as_deref(), ctx, "expr", codec)?,

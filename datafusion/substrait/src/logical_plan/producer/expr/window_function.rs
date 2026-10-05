@@ -47,6 +47,7 @@ pub fn from_window_function(
                 null_treatment,
                 distinct,
                 filter,
+                ..
             },
     } = window_fn;
     if let Some(null_treatment) = null_treatment {

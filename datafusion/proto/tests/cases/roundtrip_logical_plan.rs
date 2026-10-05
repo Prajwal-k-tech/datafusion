@@ -3562,6 +3562,16 @@ fn roundtrip_window() {
     .build()
     .unwrap();
 
+    // 12. a derived frame stays derived across the protobuf round trip
+    let test_expr12 = Expr::from(expr::WindowFunction::new(
+        WindowFunctionDefinition::WindowUDF(rank_udwf()),
+        vec![],
+    ))
+    .partition_by(vec![col("col1")])
+    .order_by(vec![col("col2").sort(true, false)])
+    .build()
+    .unwrap();
+
     roundtrip_expr_test(test_expr1, ctx.clone());
     roundtrip_expr_test(test_expr2, ctx.clone());
     roundtrip_expr_test(test_expr3, ctx.clone());
@@ -3572,7 +3582,8 @@ fn roundtrip_window() {
     roundtrip_expr_test(test_expr8, ctx.clone());
     roundtrip_expr_test(test_expr9, ctx.clone());
     roundtrip_expr_test(test_expr10, ctx.clone());
-    roundtrip_expr_test(test_expr11, ctx);
+    roundtrip_expr_test(test_expr11, ctx.clone());
+    roundtrip_expr_test(test_expr12, ctx);
 }
 
 #[tokio::test]

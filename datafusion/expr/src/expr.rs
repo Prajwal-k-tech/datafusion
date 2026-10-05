@@ -1249,7 +1249,7 @@ pub struct WindowFunction {
     pub params: WindowFunctionParams,
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Hash, Debug)]
+#[derive(Clone, Debug)]
 pub struct WindowFunctionParams {
     /// List of expressions to feed to the functions as arguments
     pub args: Vec<Expr>,
@@ -1259,12 +1259,63 @@ pub struct WindowFunctionParams {
     pub order_by: Vec<Sort>,
     /// Window frame
     pub window_frame: WindowFrame,
+    /// Whether the window frame was explicitly specified rather than derived from `order_by`.
+    pub window_frame_explicit: bool,
     /// Optional filter expression (FILTER (WHERE ...))
     pub filter: Option<Box<Expr>>,
     /// Specifies how NULL value is treated: ignore or respect
     pub null_treatment: Option<NullTreatment>,
     /// Distinct flag
     pub distinct: bool,
+}
+
+impl PartialEq for WindowFunctionParams {
+    fn eq(&self, other: &Self) -> bool {
+        self.args == other.args
+            && self.partition_by == other.partition_by
+            && self.order_by == other.order_by
+            && self.window_frame == other.window_frame
+            && self.filter == other.filter
+            && self.null_treatment == other.null_treatment
+            && self.distinct == other.distinct
+    }
+}
+
+impl Eq for WindowFunctionParams {}
+
+impl PartialOrd for WindowFunctionParams {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        (
+            &self.args,
+            &self.partition_by,
+            &self.order_by,
+            &self.window_frame,
+            &self.filter,
+            &self.null_treatment,
+            &self.distinct,
+        )
+            .partial_cmp(&(
+                &other.args,
+                &other.partition_by,
+                &other.order_by,
+                &other.window_frame,
+                &other.filter,
+                &other.null_treatment,
+                &other.distinct,
+            ))
+    }
+}
+
+impl Hash for WindowFunctionParams {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.args.hash(state);
+        self.partition_by.hash(state);
+        self.order_by.hash(state);
+        self.window_frame.hash(state);
+        self.filter.hash(state);
+        self.null_treatment.hash(state);
+        self.distinct.hash(state);
+    }
 }
 
 impl WindowFunction {
@@ -1278,6 +1329,7 @@ impl WindowFunction {
                 partition_by: Vec::default(),
                 order_by: Vec::default(),
                 window_frame: WindowFrame::new(None),
+                window_frame_explicit: false,
                 filter: None,
                 null_treatment: None,
                 distinct: false,
@@ -2594,6 +2646,7 @@ impl NormalizeEq for Expr {
                             filter: self_filter,
                             null_treatment: self_null_treatment,
                             distinct: self_distinct,
+                            ..
                         },
                 } = left.as_ref();
                 let WindowFunction {
@@ -2607,6 +2660,7 @@ impl NormalizeEq for Expr {
                             filter: other_filter,
                             null_treatment: other_null_treatment,
                             distinct: other_distinct,
+                            ..
                         },
                 } = other.as_ref();
 
@@ -2867,6 +2921,7 @@ impl HashNode for Expr {
                             filter,
                             null_treatment,
                             distinct,
+                            ..
                         },
                 } = window_fun.as_ref();
                 fun.hash(state);
@@ -3225,6 +3280,7 @@ impl Display for SchemaDisplay<'_> {
                             filter,
                             null_treatment,
                             distinct,
+                            ..
                         } = params;
 
                         // Write function name and open parenthesis
@@ -3657,6 +3713,7 @@ impl Display for Expr {
                             filter,
                             null_treatment,
                             distinct,
+                            ..
                         } = params;
 
                         fmt_function(f, &fun.to_string(), *distinct, args, true)?;

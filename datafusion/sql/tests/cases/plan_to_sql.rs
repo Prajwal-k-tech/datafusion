@@ -97,6 +97,38 @@ fn test_roundtrip_expr_4() {
     assert_snapshot!(expr, @"sum((age * 2))");
 }
 
+#[test]
+fn test_window_frame_explicit_metadata() -> Result<()> {
+    let context = MockContextProvider {
+        state: MockSessionState::default().with_window_function(rank_udwf()),
+    };
+    let schema = context
+        .get_table_source(TableReference::bare("person"))?
+        .schema();
+    let df_schema = DFSchema::try_from(schema)?;
+    let sql_to_rel = SqlToRel::new(&context);
+
+    for (sql, expected_explicit) in [
+        ("rank() OVER (ORDER BY id)", false),
+        (
+            "rank() OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)",
+            true,
+        ),
+    ] {
+        let sql_expr = Parser::new(&GenericDialect {})
+            .try_with_sql(sql)?
+            .parse_expr()?;
+        let expr =
+            sql_to_rel.sql_to_expr(sql_expr, &df_schema, &mut PlannerContext::new())?;
+        let Expr::WindowFunction(window) = expr else {
+            panic!("expected a window function")
+        };
+        assert_eq!(window.params.window_frame_explicit, expected_explicit);
+    }
+
+    Ok(())
+}
+
 fn roundtrip_expr(table: TableReference, sql: &str) -> Result<String> {
     let dialect = GenericDialect {};
     let sql_expr = Parser::new(&dialect).try_with_sql(sql)?.parse_expr()?;
@@ -3161,6 +3193,7 @@ fn test_unparse_window() -> Result<()> {
             partition_by: vec![col("k")],
             order_by: vec![col("v").sort(true, true)],
             window_frame: WindowFrame::new(None),
+            window_frame_explicit: false,
             null_treatment: None,
             distinct: false,
             filter: None,
@@ -3239,6 +3272,7 @@ fn test_unparse_window_over_aggregate_without_projection() -> Result<()> {
             partition_by: vec![],
             order_by: vec![col("time").sort(true, true)],
             window_frame: WindowFrame::new(None),
+            window_frame_explicit: false,
             null_treatment: None,
             distinct: false,
             filter: None,
@@ -3272,6 +3306,7 @@ fn test_unparse_filter_on_window_over_aggregate_without_projection() -> Result<(
             partition_by: vec![],
             order_by: vec![col("time").sort(true, true)],
             window_frame: WindowFrame::new(None),
+            window_frame_explicit: false,
             null_treatment: None,
             distinct: false,
             filter: None,
@@ -3307,6 +3342,7 @@ fn test_unparse_filter_on_aggregate_output_above_window_without_projection() -> 
             partition_by: vec![],
             order_by: vec![col("time").sort(true, true)],
             window_frame: WindowFrame::new(None),
+            window_frame_explicit: false,
             null_treatment: None,
             distinct: false,
             filter: None,
@@ -3341,6 +3377,7 @@ fn test_unparse_window_over_table_scan_without_projection() -> Result<()> {
             partition_by: vec![col("k")],
             order_by: vec![col("v").sort(true, true)],
             window_frame: WindowFrame::new(None),
+            window_frame_explicit: false,
             null_treatment: None,
             distinct: false,
             filter: None,
@@ -3373,6 +3410,7 @@ fn test_unparse_stacked_windows_without_projection() -> Result<()> {
             partition_by: vec![col("k")],
             order_by: vec![col("v").sort(true, true)],
             window_frame: WindowFrame::new(None),
+            window_frame_explicit: false,
             null_treatment: None,
             distinct: false,
             filter: None,
@@ -3386,6 +3424,7 @@ fn test_unparse_stacked_windows_without_projection() -> Result<()> {
             partition_by: vec![],
             order_by: vec![col("v").sort(false, false)],
             window_frame: WindowFrame::new(None),
+            window_frame_explicit: false,
             null_treatment: None,
             distinct: false,
             filter: None,
@@ -3419,6 +3458,7 @@ fn test_unparse_window_over_distinct_without_projection() -> Result<()> {
             partition_by: vec![],
             order_by: vec![col("v").sort(true, true)],
             window_frame: WindowFrame::new(None),
+            window_frame_explicit: false,
             null_treatment: None,
             distinct: false,
             filter: None,
@@ -3452,6 +3492,7 @@ fn test_unparse_window_over_limit_without_projection() -> Result<()> {
             partition_by: vec![],
             order_by: vec![col("v").sort(true, true)],
             window_frame: WindowFrame::new(None),
+            window_frame_explicit: false,
             null_treatment: None,
             distinct: false,
             filter: None,
@@ -3485,6 +3526,7 @@ fn test_unparse_window_over_projection_without_projection() -> Result<()> {
             partition_by: vec![],
             order_by: vec![col("v_alias").sort(true, true)],
             window_frame: WindowFrame::new(None),
+            window_frame_explicit: false,
             null_treatment: None,
             distinct: false,
             filter: None,
@@ -3521,6 +3563,7 @@ fn test_unparse_window_over_derived_aggregate_without_projection() -> Result<()>
                     .sort(true, true),
             ],
             window_frame: WindowFrame::new(None),
+            window_frame_explicit: false,
             null_treatment: None,
             distinct: false,
             filter: None,
